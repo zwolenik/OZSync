@@ -279,12 +279,13 @@ export default class OZSyncPlugin extends Plugin {
 
 	private async performAutoSync(): Promise<void> {
 		console.log('Auto sync: Starting automatic synchronization...');
-		
+
 		if (this.syncStatus.syncInProgress) {
 			console.log('Auto sync: Skipping - sync already in progress');
-			return; // Skip if sync is already in progress
+			return;
 		}
 
+		this.updateSyncStatus({ syncInProgress: true });
 		try {
 			console.log('Auto sync: Executing sync operation');
 			await this.syncManager.performSync();
@@ -294,6 +295,8 @@ export default class OZSyncPlugin extends Plugin {
 			console.error('Auto sync failed:', error);
 			this.logError('Auto sync failed', error);
 			this.updateSyncStatus({ syncInProgress: false, errorCount: this.syncStatus.errorCount + 1 });
+		} finally {
+			this.updateSyncStatus({ syncInProgress: false });
 		}
 	}
 
@@ -303,15 +306,15 @@ export default class OZSyncPlugin extends Plugin {
 			return;
 		}
 
+		this.updateSyncStatus({ syncInProgress: true });
 		try {
-			this.updateSyncStatus({ syncInProgress: true });
 			new Notice('Starting sync...');
-			
+
 			await this.syncManager.performSync();
-			
-			this.updateSyncStatus({ 
-				syncInProgress: false, 
-				lastSyncTime: new Date(), 
+
+			this.updateSyncStatus({
+				syncInProgress: false,
+				lastSyncTime: new Date(),
 				errorCount: 0,
 				lastError: undefined
 			});
@@ -319,12 +322,14 @@ export default class OZSyncPlugin extends Plugin {
 		} catch (error) {
 			console.error('Manual sync failed:', error);
 			this.logError('Manual sync failed', error);
-			this.updateSyncStatus({ 
-				syncInProgress: false, 
+			this.updateSyncStatus({
+				syncInProgress: false,
 				errorCount: this.syncStatus.errorCount + 1,
 				lastError: error.message
 			});
 			new Notice('Sync failed: ' + error.message);
+		} finally {
+			this.updateSyncStatus({ syncInProgress: false });
 		}
 	}
 

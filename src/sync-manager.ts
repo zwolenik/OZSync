@@ -261,8 +261,8 @@ export class SyncManager {
 
 			console.log('Starting bidirectional sync operation');
 
-			// Get local files that need to be synced
-			const localFiles = await this.getFilesToSync();
+			// Get local files eligible for sync (exclusion filter only, no API calls)
+			const localFiles = this.getFilesToSync();
 			
 			// Get all remote files
 			const remoteFiles = await this.client.getAllFilesRecursive(this.settings.syncDirectory);
@@ -309,82 +309,30 @@ export class SyncManager {
 			console.error('Sync operation failed', error);
 		} finally {
 			this.syncStatus.syncInProgress = false;
+			this.notifyStatusUpdate({ syncInProgress: false });
 		}
 	}
 
 	/**
-	 * Get files that need to be synchronized
-	 * 
-	 * SYNC SCOPE DETERMINATION:
-	 * 1. Gets ALL files in the vault (markdown and attachments)
-	 * 2. Applies system exclusion filters:
-	 *    - Skips files in .obsidian folder (system configurations)
-	 *    - Skips files in .trash folder (deleted files)
-	 * 3. Checks modification times:
-	 *    - Compares local file mtime with remote file timestamp
-	 *    - Only includes files that are newer locally than remotely
-	 * 4. Returns final list of files that need uploading
+	 * Get local files eligible for sync (exclusion filter only)
+	 *
+	 * Time comparison is done later in compareFiles() using the remote
+	 * file listing from getAllFilesRecursive(), which already carries
+	 * modification timestamps.  This method only filters out system
+	 * folders (.obsidian, .trash) — no API calls are made here.
 	 */
-	private async getFilesToSync(): Promise<TFile[]> {
+	private getFilesToSync(): TFile[] {
 		const allFiles = this.vault.getFiles();
-		const candidateFiles: TFile[] = [];
+		const eligible: TFile[] = [];
 
-		// First pass: filter excluded files (no API calls)
 		for (const file of allFiles) {
 			if (!this.shouldExcludeFile(file)) {
-				candidateFiles.push(file);
+				eligible.push(file);
 			}
 		}
 
-		if (candidateFiles.length === 0) {
-			return [];
-		}
-
-		// Batch check: get stats for ALL candidate files in one API call
-		const remotePaths = candidateFiles.map(f => this.getRemotePath(f.path));
-		console.log(`[SyncManager] Batch checking ${remotePaths.length} files for sync status`);
-
-		let remoteStats: any[] = [];
-		try {
-			remoteStats = await this.client.getFileStatsV2(remotePaths, false);
-		} catch (error) {
-			console.error('[SyncManager] Batch file stats check failed, falling back to individual checks', error);
-			// Fallback: assume all files need sync
-			return candidateFiles;
-		}
-
-		// Build remote stats lookup map (path -> stats)
-		const remoteStatsMap = new Map<string, any>();
-		if (Array.isArray(remoteStats)) {
-			for (const stat of remoteStats) {
-				if (stat && stat.path) {
-					remoteStatsMap.set(stat.path, stat);
-				}
-			}
-		}
-
-		// Second pass: determine which files need sync
-		const filesToSync: TFile[] = [];
-		for (const file of candidateFiles) {
-			const remotePath = this.getRemotePath(file.path);
-			const remoteFile = remoteStatsMap.get(remotePath);
-
-			if (!remoteFile) {
-				// File doesn't exist remotely, needs sync
-				filesToSync.push(file);
-			} else {
-				// Compare modification times
-				const remoteModTime = remoteFile?.modified
-					? new Date(remoteFile.modified).getTime()
-					: (remoteFile?.lastModified || 0);
-				if (file.stat.mtime > remoteModTime) {
-					filesToSync.push(file);
-				}
-			}
-		}
-
-		console.log(`[SyncManager] ${filesToSync.length} of ${candidateFiles.length} files need sync`);
-		return filesToSync;
+		console.log(`[SyncManager] ${eligible.length} local files eligible for sync (after exclusion filter)`);
+		return eligible;
 	}
 
 	/**
@@ -410,48 +358,38 @@ export class SyncManager {
 	}
 
 	/**
-	 * Check if a file needs synchronization
+	 * Check if a single file needs synchronization.
+	 *
+	 * Uses the mediainfo API to check whether a file exists remotely.
+	 * NOTE: the mediainfo API does NOT return modification timestamps,
+	 * so this method can only tell whether the file exists — not
+	 * whether it is outdated.  For proper time-based comparison use
+	 * compareFiles() which relies on the file listing API that carries
+	 * modified timestamps.
 	 */
 	private async needsSync(file: TFile): Promise<boolean> {
 		try {
 			const remotePath = this.getRemotePath(file.path);
-			const remoteStats = await this.client.getFileStatsV2([remotePath]);
-			const remoteFile = remoteStats && remoteStats.length > 0 ? remoteStats[0] : null;
-			
-			if (!remoteFile) {
-				// File doesn't exist remotely, needs sync
-				return true;
+			const remoteStats = await this.client.getFileStatsV2([remotePath], false);
+
+			// mediainfo returns an array; if the file doesn't exist the
+			// entry is null or absent
+			if (!remoteStats || remoteStats.length === 0) {
+				return true; // file missing remotely
 			}
-			
-			// Compare modification times
-			// Note: remoteFile structure may vary, adjust based on actual API response
-			const remoteModTime = remoteFile?.lastModified ? new Date(remoteFile.lastModified).getTime() : 0;
-			return file.stat.mtime > remoteModTime;
+
+			const entry = remoteStats[0];
+			if (!entry) return true;
+
+			// The API returns { data: { items, size, type } } per path.
+			// "items" is 0 for an empty file and >0 for directories.
+			// Without a modified timestamp we conservatively assume
+			// the file may need sync — the real comparison happens in
+			// compareFiles() using the listing API.
+			return true;
 		} catch (error: any) {
-			const errorDetails = {
-				methodName: 'needsSync',
-				filePath: file.path,
-				remotePath: this.getRemotePath(file.path),
-				localMtime: file.stat.mtime,
-				message: error.message,
-				status: error.response?.status,
-				responseData: error.response?.data,
-				stack: error.stack
-			};
-			
-			console.error('[Sync Manager] Failed to check if file needs sync:', {
-				timestamp: new Date().toISOString(),
-				...errorDetails
-			});
-			
-			this.addLog({
-				type: 'error',
-				message: 'Failed to check file sync status',
-				details: errorDetails,
-				timestamp: new Date().toISOString()
-			});
-			
-			// If we can't check, assume it needs sync
+			// On error (network, auth, 404, 500) assume the file needs sync
+			// rather than silently skipping it.
 			return true;
 		}
 	}
@@ -657,8 +595,8 @@ export class SyncManager {
 		
 		// Check for remote files that don't exist locally
 		for (const [remotePath, remoteFile] of remoteFileMap) {
-			if (!localFileMap.has(remotePath)) {
-				// Remote file doesn't exist locally - download
+			if (!localFileMap.has(remotePath) && !remoteFile.isDirectory) {
+				// Remote file doesn't exist locally - download (skip directories)
 				const localPath = this.getLocalPath(remotePath);
 				operations.push({
 					id: `download-${remotePath}`,
