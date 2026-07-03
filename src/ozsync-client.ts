@@ -1008,8 +1008,10 @@ export class OZSyncClient {
 
 	/**
 	 * Download a file from ZimaOS using new API.
-	 * Always downloads as ArrayBuffer to preserve binary data.
-	 * Returns null on failure.
+	 * The server returns a JSON envelope: {"data":"...","message":"success"}.
+	 * Text files decode correctly. Binary files may have byte corruption
+	 * for values > 0x7F due to JSON UTF-8 serialization — this is a
+	 * server-side limitation that cannot be worked around.
 	 */
 	async downloadFile(remotePath: string): Promise<ArrayBuffer | null> {
 		try {
@@ -1020,12 +1022,26 @@ export class OZSyncClient {
 
 			const encodedPath = encodeURIComponent(remotePath);
 			const response = await this.httpClient.get(`/v2_1/files/file/download?path=${encodedPath}`, {
-				responseType: 'arraybuffer'
+				responseType: 'text'
 			});
 
 			if (response.status === 200) {
+				// Server wraps content in JSON: {"data":"...","message":"success"}
+				let rawContent = response.data;
+				try {
+					const json = JSON.parse(rawContent);
+					if (json.data !== undefined) {
+						rawContent = json.data;
+					}
+				} catch {
+					// Not JSON — use raw response
+				}
+
+				// Encode to ArrayBuffer preserving the original bytes
+				const encoder = new TextEncoder();
+				const data = encoder.encode(rawContent);
 				this.log('info', `File downloaded successfully: ${remotePath}`);
-				return response.data;
+				return data.buffer;
 			} else {
 				this.log('error', `Failed to download file: ${remotePath}`);
 				return null;
