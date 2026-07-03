@@ -322,10 +322,12 @@ export class OZSyncClient {
 	}
 
 	// 确保token有效的包装方法
-	private async ensureValidToken(): Promise<boolean> {
-		// 如果没有认证状态，返回false
+	async ensureValidToken(): Promise<boolean> {
+		// 如果没有认证状态，尝试自动登录
 		if (!this.authState.isAuthenticated) {
-			return false;
+			console.log('[OZSync Auth] Not authenticated, attempting auto-login');
+			const loginSuccess = await this.login();
+			return loginSuccess;
 		}
 
 		// 检查并刷新token

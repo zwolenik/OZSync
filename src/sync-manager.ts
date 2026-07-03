@@ -247,8 +247,20 @@ export class SyncManager {
 		this.syncStatus.totalBytes = 0;
 
 		try {
+			// Ensure authentication before starting sync
+			console.log('[SyncManager] Ensuring authentication before sync...');
+			const authValid = await this.client.ensureValidToken();
+			if (!authValid) {
+				console.error('[SyncManager] Authentication failed, aborting sync');
+				this.syncStatus.status = 'error';
+				this.syncStatus.syncInProgress = false;
+				new Notice('OZSync: Authentication failed. Please login manually.');
+				return;
+			}
+			console.log('[SyncManager] Authentication valid, proceeding with sync');
+
 			console.log('Starting bidirectional sync operation');
-			
+
 			// Get local files that need to be synced
 			const localFiles = await this.getFilesToSync();
 			
@@ -315,20 +327,63 @@ export class SyncManager {
 	 */
 	private async getFilesToSync(): Promise<TFile[]> {
 		const allFiles = this.vault.getFiles();
-		const filesToSync: TFile[] = [];
+		const candidateFiles: TFile[] = [];
 
+		// First pass: filter excluded files (no API calls)
 		for (const file of allFiles) {
-			// Check if file should be excluded (only system folders)
-			if (this.shouldExcludeFile(file)) {
-				continue;
-			}
-
-			// Check if file needs sync (modified since last sync)
-			if (await this.needsSync(file)) {
-				filesToSync.push(file);
+			if (!this.shouldExcludeFile(file)) {
+				candidateFiles.push(file);
 			}
 		}
 
+		if (candidateFiles.length === 0) {
+			return [];
+		}
+
+		// Batch check: get stats for ALL candidate files in one API call
+		const remotePaths = candidateFiles.map(f => this.getRemotePath(f.path));
+		console.log(`[SyncManager] Batch checking ${remotePaths.length} files for sync status`);
+
+		let remoteStats: any[] = [];
+		try {
+			remoteStats = await this.client.getFileStatsV2(remotePaths, false);
+		} catch (error) {
+			console.error('[SyncManager] Batch file stats check failed, falling back to individual checks', error);
+			// Fallback: assume all files need sync
+			return candidateFiles;
+		}
+
+		// Build remote stats lookup map (path -> stats)
+		const remoteStatsMap = new Map<string, any>();
+		if (Array.isArray(remoteStats)) {
+			for (const stat of remoteStats) {
+				if (stat && stat.path) {
+					remoteStatsMap.set(stat.path, stat);
+				}
+			}
+		}
+
+		// Second pass: determine which files need sync
+		const filesToSync: TFile[] = [];
+		for (const file of candidateFiles) {
+			const remotePath = this.getRemotePath(file.path);
+			const remoteFile = remoteStatsMap.get(remotePath);
+
+			if (!remoteFile) {
+				// File doesn't exist remotely, needs sync
+				filesToSync.push(file);
+			} else {
+				// Compare modification times
+				const remoteModTime = remoteFile?.modified
+					? new Date(remoteFile.modified).getTime()
+					: (remoteFile?.lastModified || 0);
+				if (file.stat.mtime > remoteModTime) {
+					filesToSync.push(file);
+				}
+			}
+		}
+
+		console.log(`[SyncManager] ${filesToSync.length} of ${candidateFiles.length} files need sync`);
 		return filesToSync;
 	}
 

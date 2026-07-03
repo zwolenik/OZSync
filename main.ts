@@ -14,6 +14,7 @@ export default class OZSyncPlugin extends Plugin {
 	recentOperations: SyncOperation[] = [];
 	errorLogs: SyncLog[] = [];
 	private autoSyncInterval: number | null = null;
+	private tokenRefreshInterval: number | null = null;
 	private statusBarItem: HTMLElement | null = null;
 
 	async onload() {
@@ -169,6 +170,12 @@ export default class OZSyncPlugin extends Plugin {
 			this.autoSyncInterval = null;
 		}
 
+		// Stop proactive token refresh
+		if (this.tokenRefreshInterval) {
+			clearInterval(this.tokenRefreshInterval);
+			this.tokenRefreshInterval = null;
+		}
+
 		// Cleanup sync manager
 		if (this.syncManager) {
 			this.syncManager.stopAutoSync();
@@ -230,6 +237,12 @@ export default class OZSyncPlugin extends Plugin {
 			console.log('Auto sync timer cleared');
 		}
 
+		// Clear existing token refresh interval
+		if (this.tokenRefreshInterval) {
+			clearInterval(this.tokenRefreshInterval);
+			this.tokenRefreshInterval = null;
+		}
+
 		// Setup new interval if auto sync is enabled
 		if (this.settings.autoSyncEnabled && this.settings.syncInterval > 0) {
 			const intervalMs = this.settings.syncInterval * 60 * 1000; // Convert minutes to milliseconds
@@ -238,6 +251,27 @@ export default class OZSyncPlugin extends Plugin {
 				this.performAutoSync();
 			}, intervalMs);
 			console.log(`Auto sync enabled: interval set to ${this.settings.syncInterval} minutes (${intervalMs}ms)`);
+
+			// Proactive token refresh: check every 5 minutes, refresh if expiring within 10 minutes
+			this.tokenRefreshInterval = window.setInterval(async () => {
+				try {
+					const authState = this.ozsyncClient?.getAuthState?.();
+					if (!authState?.isAuthenticated || !authState?.tokenData?.expires_at) {
+						return;
+					}
+					const now = Date.now() / 1000;
+					const expiresAt = authState.tokenData.expires_at;
+					const minutesUntilExpiry = (expiresAt - now) / 60;
+
+					if (minutesUntilExpiry <= 10) {
+						console.log(`[OZSync Token] Token expiring in ${Math.round(minutesUntilExpiry)}min, refreshing proactively`);
+						await this.ozsyncClient.ensureValidToken();
+					}
+				} catch (error) {
+					console.error('[OZSync Token] Proactive refresh failed:', error);
+				}
+			}, 5 * 60 * 1000); // Check every 5 minutes
+			console.log('Proactive token refresh enabled (every 5 min, threshold: 10 min)');
 		} else {
 			console.log('Auto sync disabled or invalid interval');
 		}
