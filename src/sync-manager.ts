@@ -1,7 +1,14 @@
 import { TFile, TFolder, Vault, Notice, App } from 'obsidian';
 import { OZSyncClient } from './ozsync-client';
 import { OZSyncSettings, SyncStatus, SyncOperation, OZSyncFile } from './types';
-import { format } from 'date-fns';
+
+const TEXT_EXTENSIONS = new Set([
+	'md', 'txt', 'csv', 'json', 'yaml', 'yml', 'html', 'css', 'js',
+	'canvas', 'xml', 'ts', 'tsx', 'jsx', 'py', 'sh', 'bat', 'ps1',
+	'toml', 'ini', 'cfg', 'conf', 'log', 'sql', 'graphql', 'gql',
+	'env', 'gitignore', 'editorconfig', 'eslintrc', 'prettierrc',
+	'lock', 'base', 'epub'
+]);
 
 /**
  * OBSIDIAN VAULT STRUCTURE AND AUTO-SYNC EXPLANATION
@@ -419,7 +426,7 @@ export class SyncManager {
 			
 			// Read file content
 			let content: string | Buffer;
-			if (file.extension === 'md') {
+			if (TEXT_EXTENSIONS.has(file.extension)) {
 				content = await this.vault.read(file);
 			} else {
 				const arrayBuffer = await this.vault.readBinary(file);
@@ -615,36 +622,48 @@ export class SyncManager {
 	}
 	
 	/**
-	 * Download a file from remote to local
+	 * Download a file from remote to local.
+	 * Handles both text and binary content.
 	 */
 	private async downloadFile(remotePath: string, localPath: string): Promise<void> {
 		try {
 			console.log(`Downloading file: ${remotePath} -> ${localPath}`);
-			
-			// Download file content from OZSync
-			const content = await this.client.downloadFile(remotePath);
-			
-			if (content === null) {
+
+			const data = await this.client.downloadFile(remotePath);
+
+			if (data === null) {
 				throw new Error('Failed to download file content');
 			}
-			
+
 			// Ensure parent directory exists
 			const parentDir = localPath.substring(0, localPath.lastIndexOf('/'));
 			if (parentDir && !(await this.vault.adapter.exists(parentDir))) {
 				await this.vault.adapter.mkdir(parentDir);
 			}
-			
-			// Write file to vault
-			if (await this.vault.adapter.exists(localPath)) {
-				// File exists, modify it
-				await this.vault.adapter.write(localPath, content);
+
+			// Determine if this is a text or binary file
+			const ext = localPath.split('.').pop()?.toLowerCase() || '';
+			const isText = TEXT_EXTENSIONS.has(ext);
+
+			if (isText) {
+				// Decode ArrayBuffer as UTF-8 text
+				const text = new TextDecoder('utf-8').decode(data);
+				if (await this.vault.adapter.exists(localPath)) {
+					await this.vault.adapter.write(localPath, text);
+				} else {
+					await this.vault.create(localPath, text);
+				}
 			} else {
-				// File doesn't exist, create it
-				await this.vault.create(localPath, content);
+				// Write raw binary data
+				if (await this.vault.adapter.exists(localPath)) {
+					await this.vault.adapter.writeBinary(localPath, data);
+				} else {
+					await this.vault.createBinary(localPath, data);
+				}
 			}
-			
+
 			console.log(`File downloaded successfully: ${localPath}`);
-			
+
 		} catch (error) {
 			console.error(`Failed to download file: ${remotePath}`, error);
 			throw error;

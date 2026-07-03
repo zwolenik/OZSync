@@ -107,9 +107,11 @@ export default class OZSyncPlugin extends Plugin {
 			callback: () => this.debugStatusBar()
 		});
 
-		// 将插件实例暴露到全局，方便调试
-		(window as any).ozsyncPlugin = this;
-		console.log('[OZSync Plugin] 插件实例已暴露到 window.ozsyncPlugin，可在控制台中调试');
+		// Expose plugin instance for debugging only when debugMode is enabled
+		if (this.settings.debugMode) {
+			(window as any).ozsyncPlugin = this;
+			console.log('[OZSync Plugin] Debug mode: plugin exposed on window.ozsyncPlugin');
+		}
 
 
 

@@ -339,20 +339,25 @@ export class CloudBrowserView extends ItemView {
 
 	private async downloadFile(file: OZSyncFile): Promise<void> {
 		try {
-				const content = await this.plugin.ozsyncClient.downloadFile(file.path);
-			
-			// Create file in vault
+			const data = await this.plugin.ozsyncClient.downloadFile(file.path);
+
 			const fileName = file.name;
 			const filePath = `Downloads/${fileName}`;
-			
-			// Ensure Downloads folder exists
+
 			const downloadsFolder = this.app.vault.getAbstractFileByPath('Downloads');
 			if (!downloadsFolder) {
 				await this.app.vault.createFolder('Downloads');
 			}
-			
-			if (content !== null) {
-				await this.app.vault.create(filePath, content);
+
+			if (data !== null) {
+				const ext = fileName.split('.').pop()?.toLowerCase() || '';
+				const textExts = ['md','txt','csv','json','yaml','yml','html','css','js','canvas','xml'];
+				if (textExts.includes(ext)) {
+					const text = new TextDecoder('utf-8').decode(data);
+					await this.app.vault.create(filePath, text);
+				} else {
+					await this.app.vault.createBinary(filePath, data);
+				}
 			}
 			new Notice(`Downloaded: ${fileName}`);
 		} catch (error) {
@@ -419,10 +424,9 @@ export class CloudBrowserView extends ItemView {
 
 	private async previewFile(file: OZSyncFile): Promise<void> {
 		try {
-				const content = await this.plugin.ozsyncClient.downloadFile(file.path);
-			if (content !== null) {
-				const buffer = new TextEncoder().encode(content).buffer;
-				new PreviewModal(this.app, file, buffer).open();
+			const data = await this.plugin.ozsyncClient.downloadFile(file.path);
+			if (data !== null) {
+				new PreviewModal(this.app, file, data).open();
 			} else {
 				new Notice(`Failed to load content for: ${file.name}`);
 			}

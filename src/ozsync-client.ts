@@ -54,11 +54,10 @@ export class OZSyncClient {
 				headers: { 'Content-Type': 'application/json' }
 			});
 			
-			this.log('info', 'Sending login request', { 
-				url: loginUrl, 
+			this.log('info', 'Sending login request', {
+				url: loginUrl,
 				fullUrl: `${this.httpClient.defaults.baseURL}${loginUrl}`,
-				username: loginData.username,
-				requestData: loginData
+				username: loginData.username
 			});
 
 			const response = await this.httpClient.post<LoginResponse>(loginUrl, loginData, {
@@ -1008,11 +1007,12 @@ export class OZSyncClient {
 
 
 	/**
-	 * Download a file from ZimaOS using new API
+	 * Download a file from ZimaOS using new API.
+	 * Always downloads as ArrayBuffer to preserve binary data.
+	 * Returns null on failure.
 	 */
-	async downloadFile(remotePath: string): Promise<string | null> {
+	async downloadFile(remotePath: string): Promise<ArrayBuffer | null> {
 		try {
-			// 确保token有效
 			const tokenValid = await this.ensureValidToken();
 			if (!tokenValid) {
 				throw new Error('Authentication required');
@@ -1020,15 +1020,14 @@ export class OZSyncClient {
 
 			const encodedPath = encodeURIComponent(remotePath);
 			const response = await this.httpClient.get(`/v2_1/files/file/download?path=${encodedPath}`, {
-				responseType: 'text'
+				responseType: 'arraybuffer'
 			});
 
 			if (response.status === 200) {
 				this.log('info', `File downloaded successfully: ${remotePath}`);
 				return response.data;
 			} else {
-				const errorMessage = 'Failed to download file';
-				this.log('error', errorMessage);
+				this.log('error', `Failed to download file: ${remotePath}`);
 				return null;
 			}
 		} catch (error: any) {
@@ -1171,17 +1170,13 @@ export class OZSyncClient {
 		};
 		
 		this.logs.push(logEntry);
-		
+
 		// Keep only last 1000 log entries
 		if (this.logs.length > 1000) {
 			this.logs = this.logs.slice(-1000);
 		}
-		
-		// Show error notices to user
-		if (level === 'error') {
-			new Notice(`OZSync Error: ${message}`);
-		}
-		
+
+		// Log to console — Notices are created by callers via showErrorNotice()
 		console.log(`[OZSync] ${level.toUpperCase()}: ${message}`, details);
 	}
 
